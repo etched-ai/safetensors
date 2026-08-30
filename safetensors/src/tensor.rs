@@ -312,7 +312,18 @@ impl<'data> SafeTensors<'data> {
         let metadata: Metadata = serde_json::from_str(string)
             .map_err(|_| SafeTensorError::InvalidHeaderDeserialization)?;
         let buffer_end = metadata.validate()?;
-        if buffer_end + 8 + n != buffer_len {
+        // `buffer_end + 8 + n` wraps in a release build. `buffer_end` is derived
+        // from the header's own tensor offsets and `n` is the header length, both
+        // fully attacker-controlled in an untrusted .safetensors file, so a crafted
+        // header could make the wrapped sum equal `buffer_len` and pass this
+        // completeness check while the real end of the tensor data lies far beyond
+        // the buffer. Compute it with checked arithmetic and treat overflow as the
+        // malformed-file case it is.
+        let total_len = buffer_end
+            .checked_add(8)
+            .and_then(|v| v.checked_add(n))
+            .ok_or(SafeTensorError::MetadataIncompleteBuffer)?;
+        if total_len != buffer_len {
             return Err(SafeTensorError::MetadataIncompleteBuffer);
         }
         Ok((n, metadata))
@@ -606,8 +617,23 @@ impl<'data> TensorView<'data> {
         data: &'data [u8],
     ) -> Result<Self, SafeTensorError> {
         let n = data.len();
-        let n_elements: usize = shape.iter().product();
-        if n != n_elements * dtype.size() {
+        // Both the element product and the byte multiplication must be checked.
+        // `shape.iter().product()` and `n_elements * dtype.size()` wrap silently in
+        // a release build, so a header declaring a shape such as
+        // [2^61, 4, 4] produced a small wrapped byte count that happened to equal
+        // `data.len()` -- the validation passed and every later index computation
+        // derived from `shape` then ran far outside the 1-element buffer. Failing
+        // closed on overflow makes the equality check meaningful.
+        let n_elements: usize = shape
+            .iter()
+            .try_fold(1usize, |acc, &dim| acc.checked_mul(dim))
+            .ok_or_else(|| {
+                SafeTensorError::InvalidTensorView(dtype, shape.clone(), n)
+            })?;
+        let expected_bytes = n_elements.checked_mul(dtype.size()).ok_or_else(|| {
+            SafeTensorError::InvalidTensorView(dtype, shape.clone(), n)
+        })?;
+        if n != expected_bytes {
             Err(SafeTensorError::InvalidTensorView(dtype, shape, n))
         } else {
             Ok(Self { dtype, shape, data })

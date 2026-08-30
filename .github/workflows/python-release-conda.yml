@@ -5,8 +5,18 @@ on:
     tags:
       - v*
 
-env:
-  ANACONDA_API_TOKEN: ${{ secrets.ANACONDA_API_TOKEN }}
+# Least privilege: this workflow only reads the repository and publishes to
+# Anaconda, so it needs no write access to GitHub itself. Without an explicit
+# block, GITHUB_TOKEN is granted the repository-default scopes.
+permissions:
+  contents: read
+
+# ANACONDA_API_TOKEN is deliberately NOT declared at workflow level. A
+# workflow-level `env:` exports the secret into the environment of every step in
+# every job, including third-party actions (setup-miniconda, actions-rs/toolchain)
+# and every `conda`/`conda-build` invocation, any of which can read it from
+# os.environ. It is scoped to the two "Upload to Anaconda" steps that actually
+# need it instead.
 
 jobs:
   build_and_package:
@@ -56,6 +66,8 @@ jobs:
 
       - name: Upload to Anaconda
         shell: bash -l {0}
+        env:
+          ANACONDA_API_TOKEN: ${{ secrets.ANACONDA_API_TOKEN }}
         run: |
           anaconda upload `conda-build .github/conda --output` --force
           
@@ -83,10 +95,17 @@ jobs:
 
       - name: Install miniconda
         run: |
+          set -euo pipefail
           yum install -y wget openssl-devel
           export FILENAME=Miniconda3-py${{ matrix.python }}_23.5.2-0-Linux-x86_64.sh
           wget https://repo.anaconda.com/miniconda/$FILENAME
-          sha256sum $FILENAME | awk '$1=="${{ matrix.checksum}}"{print"good to go"}'
+          # Enforce the checksum. The previous form piped sha256sum into awk and
+          # printed "good to go" on a match -- but awk exits 0 whether or not the
+          # pattern matched, and the pipeline's status is awk's, so a tampered or
+          # truncated download produced no output and the build continued to execute
+          # the installer anyway. `sha256sum -c` exits non-zero on a mismatch, and
+          # `set -euo pipefail` above makes that abort the step.
+          echo "${{ matrix.checksum }}  $FILENAME" | sha256sum -c -
           bash $FILENAME -b -p $HOME/miniconda
           source $HOME/miniconda/bin/activate
 
@@ -129,6 +148,8 @@ jobs:
 
       - name: Upload to Anaconda
         shell: bash -l {0}
+        env:
+          ANACONDA_API_TOKEN: ${{ secrets.ANACONDA_API_TOKEN }}
         run: |
           source $HOME/miniconda/bin/activate
           anaconda upload `conda-build .github/conda --output` --force

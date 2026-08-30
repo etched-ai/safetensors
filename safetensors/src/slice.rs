@@ -284,7 +284,20 @@ impl<'data> SliceIterator<'data> {
                     }
                     TensorIndexer::Select(s) => (*s, *s + 1),
                 };
-                if start >= shape && stop > shape {
+                // Both halves must be checked independently: this was previously
+                // `start >= shape && stop > shape`, so a slice with an in-range
+                // `start` but an out-of-range `stop` (e.g. 0..shape+1) passed the
+                // guard entirely. `newshape.push(stop - start)` below then recorded
+                // a length larger than the dimension, and the iterator went on to
+                // read past the end of the tensor's byte span.
+                //
+                // `stop < start` is rejected for the same reason: `stop - start`
+                // underflows on usize, which either panics in a debug build or wraps
+                // to an enormous length in a release build. `Bound::Excluded(s)`
+                // arms above turn `s` into `s + 1`, so an inverted range is
+                // reachable from ordinary caller input, not just from a malformed
+                // one.
+                if start > shape || stop > shape || stop < start {
                     return Err(InvalidSlice::SliceOutOfRange {
                         dim_index: i,
                         asked: stop.saturating_sub(1),
