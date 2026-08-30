@@ -183,7 +183,14 @@ def convert_file(
     sf_filename: str,
     discard_names: List[str],
 ):
-    loaded = torch.load(pt_filename, map_location="cpu")
+    # weights_only=True is essential here, not optional hardening. This script's
+    # whole purpose is to read a .bin/.pt checkpoint downloaded from an arbitrary
+    # Hugging Face repository, and an unrestricted torch.load unpickles that file --
+    # which executes whatever code the pickle stream names. Converting an untrusted
+    # checkpoint was therefore equivalent to running its author's code. With
+    # weights_only=True the pickle is interpreted by a restricted unpickler that
+    # only reconstructs tensors and plain containers.
+    loaded = torch.load(pt_filename, map_location="cpu", weights_only=True)
     if "state_dict" in loaded:
         loaded = loaded["state_dict"]
     to_removes = _remove_duplicate_names(loaded, discard_names=discard_names)
